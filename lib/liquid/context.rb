@@ -23,11 +23,12 @@ module Liquid
       @environments     = [environments].flatten
       @scopes           = [(outer_scope || {})]
       @registers        = registers
-      @static_registers = static_registers.tap(&:freeze)
+      @static_registers = static_registers.freeze
       @errors           = []
       @partial          = false
       @strict_variables = false
       @resource_limits  = resource_limits || ResourceLimits.new(Template.default_resource_limits)
+      @base_scope_depth = 0
       squash_instance_assigns_with_environments
 
       @this_stack_used = false
@@ -94,7 +95,7 @@ module Liquid
     # Push new local scope on the stack. use <tt>Context#stack</tt> instead
     def push(new_scope = {})
       @scopes.unshift(new_scope)
-      raise StackLevelError, "Nesting too deep".freeze if @scopes.length > Block::MAX_DEPTH
+      check_overflow
     end
 
     # Merge a hash of variables in the current local scope
@@ -134,13 +135,18 @@ module Liquid
     # Creates a new context inheriting resource limits, filters, environment etc.,
     # but with an isolated scope.
     def new_isolated_subcontext
+      check_overflow
+
       Context.build(
         environments: environments,
         resource_limits: resource_limits,
         static_registers: static_registers
       ).tap do |subcontext|
+        subcontext.base_scope_depth = base_scope_depth + 1
         subcontext.exception_renderer = exception_renderer
         subcontext.add_filters(@filters)
+        subcontext.errors = errors
+        subcontext.warnings = warnings
       end
     end
 
@@ -221,7 +227,21 @@ module Liquid
       end
     end
 
+    protected
+
+    attr_writer :base_scope_depth, :warnings, :errors
+
     private
+
+    attr_reader :base_scope_depth
+
+    def check_overflow
+      raise StackLevelError, "Nesting too deep".freeze if overflow?
+    end
+
+    def overflow?
+      base_scope_depth + @scopes.length > Block::MAX_DEPTH
+    end
 
     def internal_error
       # raise and catch to set backtrace and cause on exception
